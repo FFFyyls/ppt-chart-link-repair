@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+venv/
+
+work/
+output/
+outputs/
+dist/
+*.log
+*.tmp
+*.bak
+
+# Prevent accidental publication of real Office documents.
+*.ppt
+*.pptx
+*.pptm
+*.xls
+*.xlsx
+*.xlsm
