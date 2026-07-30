@@ -173,7 +173,7 @@ def require_confirmation(manifest: dict[str, Any]) -> None:
 
 
 def source_group_key(target: str | None, chart_id: str) -> str:
-    if not target:
+    if not target or str(target).strip().casefold() == "null":
         return f"chart:{chart_id}"
     decoded = unquote(target).replace("file:///", "", 1).replace("/", "\\")
     return ntpath.normcase(ntpath.normpath(decoded))
@@ -390,26 +390,29 @@ def _analyze_chart(chart_xml: bytes, chart_id: str) -> dict[str, Any]:
                         issues.append(
                             f"Incomplete defined-name cache for series {series_index} {role}: {formula}"
                         )
-                    references.append(
-                        {
-                            "series_index": series_index,
-                            "role": role,
-                            "formula": formula,
-                            "defined_name": formula.lstrip("="),
-                            "workbook": None,
-                            "sheet": None,
-                            "address": None,
-                            "cells": [],
-                            "cache_type": cache_type,
-                            "values": cache.values,
-                            "declared_count": cache.declared_count,
-                            "actual_count": cache.actual_count,
-                            "has_gaps": cache.has_gaps,
-                            "cache_indexes": cache.indexes,
-                            "intentional_gap": None,
-                            "format_code": format_code,
-                        }
-                    )
+                    reference = {
+                        "series_index": series_index,
+                        "role": role,
+                        "formula": formula,
+                        "workbook": None,
+                        "sheet": None,
+                        "address": None,
+                        "cells": [],
+                        "cache_type": cache_type,
+                        "values": cache.values,
+                        "declared_count": cache.declared_count,
+                        "actual_count": cache.actual_count,
+                        "has_gaps": cache.has_gaps,
+                        "cache_indexes": cache.indexes,
+                        "intentional_gap": None,
+                        "format_code": format_code,
+                    }
+                    stripped_formula = formula.lstrip("=").strip()
+                    if stripped_formula.startswith("{") and stripped_formula.endswith("}"):
+                        reference["inline_array"] = True
+                    else:
+                        reference["defined_name"] = stripped_formula
+                    references.append(reference)
                     continue
                 try:
                     parsed = parse_formula(formula)
@@ -844,12 +847,108 @@ def _bounding_range(cells: list[str]) -> str:
     return f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
 
 
+def _materialize_conflicting_defined_name_references(chart: dict[str, Any]) -> None:
+    refs_by_name: dict[str, list[dict[str, Any]]] = {}
+    for ref in chart.get("references", []):
+        defined_name = ref.get("defined_name")
+        if defined_name:
+            refs_by_name.setdefault(str(defined_name), []).append(ref)
+
+    conflicting_names = {
+        name
+        for name, refs in refs_by_name.items()
+        if len(
+            {
+                next((value for value in ref.get("values", []) if value is not None), None)
+                for ref in refs
+            }
+        )
+        > 1
+    }
+    if not conflicting_names:
+        return
+
+    sheet_name = ("_Cache_" + re.sub(r"[^A-Za-z0-9_]", "_", chart["chart_id"]))[:31]
+    role_offsets = {
+        "cat": (0, 2),
+        "xVal": (0, 2),
+        "val": (1, 2),
+        "yVal": (1, 2),
+        "bubbleSize": (2, 2),
+        "tx": (1, 1),
+    }
+    for ref in chart.get("references", []):
+        defined_name = ref.get("defined_name")
+        if str(defined_name) not in conflicting_names:
+            continue
+        series_index = int(ref.get("series_index", 0))
+        col_offset, start_row = role_offsets.get(str(ref.get("role")), (3, 2))
+        column = 1 + series_index * 4 + col_offset
+        values = list(ref.get("values", []))
+        cells = [
+            f"{get_column_letter(column)}{start_row + index}"
+            for index in range(len(values))
+        ]
+        if not cells:
+            continue
+        address = cells[0] if len(cells) == 1 else f"{cells[0]}:{cells[-1]}"
+        ref["original_formula"] = ref.get("formula")
+        ref["formula"] = f"'{sheet_name}'!${get_column_letter(column)}${start_row}"
+        if len(cells) > 1:
+            ref["formula"] += f":${get_column_letter(column)}${start_row + len(cells) - 1}"
+        ref["sheet"] = sheet_name
+        ref["address"] = address
+        ref["cells"] = cells
+        ref["materialized_defined_name"] = defined_name
+        ref.pop("defined_name", None)
+
+
+def _materialize_inline_array_references(chart: dict[str, Any]) -> None:
+    sheet_name = ("_Cache_" + re.sub(r"[^A-Za-z0-9_]", "_", chart["chart_id"]))[:31]
+    role_offsets = {
+        "cat": (0, 2),
+        "xVal": (0, 2),
+        "val": (1, 2),
+        "yVal": (1, 2),
+        "bubbleSize": (2, 2),
+        "tx": (1, 1),
+    }
+    for ref in chart.get("references", []):
+        formula = str(ref.get("formula", "")).lstrip("=").strip()
+        if not (
+            ref.get("inline_array")
+            or (formula.startswith("{") and formula.endswith("}"))
+        ):
+            continue
+        series_index = int(ref.get("series_index", 0))
+        col_offset, start_row = role_offsets.get(str(ref.get("role")), (3, 2))
+        column = 1 + series_index * 4 + col_offset
+        values = list(ref.get("values", []))
+        cells = [
+            f"{get_column_letter(column)}{start_row + index}"
+            for index in range(len(values))
+        ]
+        if not cells:
+            continue
+        address = cells[0] if len(cells) == 1 else f"{cells[0]}:{cells[-1]}"
+        ref["original_formula"] = ref.get("formula")
+        ref["formula"] = f"'{sheet_name}'!${get_column_letter(column)}${start_row}"
+        if len(cells) > 1:
+            ref["formula"] += f":${get_column_letter(column)}${start_row + len(cells) - 1}"
+        ref["sheet"] = sheet_name
+        ref["address"] = address
+        ref["cells"] = cells
+        ref["inline_array"] = True
+        ref.pop("defined_name", None)
+
+
 def build_source_data(chart: dict[str, Any]) -> dict[str, Any]:
     sheet_cells: dict[str, list[str]] = {}
     val_shapes = []
     for ref in chart.get("references", []):
-        sheet_cells.setdefault(ref["sheet"], []).extend(ref.get("cells", []))
-        if ref.get("role") == "val":
+        if ref.get("sheet") and ref.get("cells"):
+            sheet_cells.setdefault(ref["sheet"], []).extend(ref.get("cells", []))
+        if ref.get("role") == "val" and ref.get("address"):
             min_col, min_row, max_col, max_row = range_boundaries(ref["address"])
             val_shapes.append((max_col - min_col + 1, max_row - min_row + 1))
     if not sheet_cells:
@@ -895,6 +994,8 @@ def recover_manifest(
         )
     for chart in selected:
         immutable = []
+        _materialize_conflicting_defined_name_references(chart)
+        _materialize_inline_array_references(chart)
         chart["data_mappings"] = build_data_mappings(chart)
         chart["source_data"] = build_source_data(chart)
         for ref in chart.get("references", []):

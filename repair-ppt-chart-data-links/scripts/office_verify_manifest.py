@@ -7,12 +7,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
 class VerificationManifestError(RuntimeError):
     pass
+
+
+def _chart_ordinal(chart_id: str) -> int:
+    match = re.search(r"-chart-(\d+)$", chart_id)
+    if not match or int(match.group(1)) < 1:
+        raise VerificationManifestError(
+            f"Chart {chart_id} does not contain a valid one-based chart ordinal"
+        )
+    return int(match.group(1))
 
 
 def _runtime_series_name(mapping: dict[str, Any], chart_id: str) -> str:
@@ -89,6 +99,7 @@ def build_manifest(source: dict[str, Any]) -> dict[str, Any]:
                 "chart_id": chart_id,
                 "actual_slide": int(chart["actual_slide"]),
                 "shape_name": str(chart.get("shape_name", "")),
+                "chart_ordinal": _chart_ordinal(chart_id),
                 "probe": _first_numeric_probe(chart),
             }
         )

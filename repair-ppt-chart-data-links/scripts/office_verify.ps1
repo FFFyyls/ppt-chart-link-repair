@@ -44,6 +44,19 @@ if ($powerPointPids.Count -gt 0) {
   exit 20
 }
 
+$excelPids = @(Get-Process EXCEL -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+if ($excelPids.Count -gt 0) {
+  $gate = [ordered]@{
+    passed = $false
+    requires_user_action = $true
+    message = 'Excel正在运行。为防止ChartData附着到用户Excel，请保存并关闭所有Excel窗口后继续'
+    stage = 'office-verification-gate'
+  }
+  [IO.File]::WriteAllText($resultPath, ($gate | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+  $gate | ConvertTo-Json -Depth 6
+  exit 20
+}
+
 & $PythonPath $builder --source-manifest $ManifestPath --output $verifyManifestPath
 if ($LASTEXITCODE -ne 0) { throw 'Failed to build the Office verification manifest.' }
 $manifest = [IO.File]::ReadAllText($verifyManifestPath, [Text.Encoding]::UTF8) | ConvertFrom-Json

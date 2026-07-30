@@ -127,22 +127,38 @@ function Get-PointValue($chart, [int]$seriesOneBased, [int]$pointZeroBased) {
   } finally { Release-Com $series }
 }
 
-function Get-TargetChartShape($slide, [string]$expectedName) {
-  try { return $slide.Shapes.Item($expectedName) } catch {}
+function Get-TargetChartShape($slide, [string]$expectedName, [int]$expectedOrdinal) {
   $suffix = $null
   if ($expectedName -match '(\d+)\s*$') { $suffix = $Matches[1] }
-  $matches = @()
+  $chartShapeIndexes = @()
+  $exactMatches = @()
+  $suffixMatches = @()
   for ($index = 1; $index -le $slide.Shapes.Count; $index++) {
     $candidate = $null
     try {
       $candidate = $slide.Shapes.Item($index)
       if ($candidate.HasChart -eq -1) {
+        $chartShapeIndexes += $index
+        if ([string]::Equals([string]$candidate.Name, $expectedName, [StringComparison]::Ordinal)) {
+          $exactMatches += $index
+        }
         $nameMatches = ($null -ne $suffix -and [string]$candidate.Name -match ("{0}\s*$" -f [regex]::Escape($suffix)))
-        if ($nameMatches) { $matches += $index }
+        if ($nameMatches) { $suffixMatches += $index }
       }
     } finally { Release-Com $candidate }
   }
-  if ($matches.Count -eq 1) { return $slide.Shapes.Item([int]$matches[0]) }
+  if ($exactMatches.Count -eq 1) { return $slide.Shapes.Item([int]$exactMatches[0]) }
+  if (
+    $exactMatches.Count -gt 1 -and
+    $expectedOrdinal -ge 1 -and
+    $expectedOrdinal -le $chartShapeIndexes.Count
+  ) {
+    return $slide.Shapes.Item([int]$chartShapeIndexes[$expectedOrdinal - 1])
+  }
+  if ($suffixMatches.Count -eq 1) { return $slide.Shapes.Item([int]$suffixMatches[0]) }
+  if ($expectedOrdinal -ge 1 -and $expectedOrdinal -le $chartShapeIndexes.Count) {
+    return $slide.Shapes.Item([int]$chartShapeIndexes[$expectedOrdinal - 1])
+  }
   throw "Cannot resolve native chart shape '$expectedName' on slide $($slide.SlideIndex)."
 }
 
@@ -162,7 +178,7 @@ try {
   $presentation = $powerpoint.Presentations.Open($Pptx, $readOnly, $false, $withWindow)
   Mark-Progress 'presentation-open'
   $slide = $presentation.Slides.Item([int]$chartInfo.actual_slide)
-  $shape = Get-TargetChartShape $slide ([string]$chartInfo.shape_name)
+  $shape = Get-TargetChartShape $slide ([string]$chartInfo.shape_name) ([int]$chartInfo.chart_ordinal)
   if ($shape.HasChart -ne -1) { throw 'Target shape is not a native chart.' }
   $chartObject = $shape.Chart
   $chartData = $chartObject.ChartData

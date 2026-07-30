@@ -21,7 +21,12 @@ import office_verify_manifest as office_manifest
 import portable_bundle
 
 
-def make_fixture(path: Path, sparse: bool = False) -> None:
+def make_fixture(
+    path: Path,
+    sparse: bool = False,
+    inline_arrays: bool = False,
+    external_target: str = "E:/ProjectA/data.xlsx",
+) -> None:
     if sparse:
         cat_points = '<c:pt idx="0"><c:v>2024</c:v></c:pt><c:pt idx="2"><c:v>2026</c:v></c:pt>'
         value_points = '<c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="2"><c:v>30</c:v></c:pt>'
@@ -32,15 +37,23 @@ def make_fixture(path: Path, sparse: bool = False) -> None:
         value_points = '<c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt>'
         range_end = "C"
         point_count = 2
+    if inline_arrays:
+        tx_formula = "sheet"
+        cat_formula = '{"2024","2025"}'
+        val_formula = "{10,20}"
+    else:
+        tx_formula = "'[data.xlsx]Sheet A'!$A$2"
+        cat_formula = f"'[data.xlsx]Sheet A'!$B$1:${range_end}$1"
+        val_formula = f"'[data.xlsx]Sheet A'!$B$2:${range_end}$2"
     chart = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
  <c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser>
   <c:idx val="0"/><c:order val="0"/>
-  <c:tx><c:strRef><c:f>'[data.xlsx]Sheet A'!$A$2</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>Series 1</c:v></c:pt></c:strCache></c:strRef></c:tx>
-  <c:cat><c:strRef><c:f>'[data.xlsx]Sheet A'!$B$1:${range_end}$1</c:f><c:strCache><c:ptCount val="{point_count}"/>{cat_points}</c:strCache></c:strRef></c:cat>
-  <c:val><c:numRef><c:f>'[data.xlsx]Sheet A'!$B$2:${range_end}$2</c:f><c:numCache><c:formatCode>0.00</c:formatCode><c:ptCount val="{point_count}"/>{value_points}</c:numCache></c:numRef></c:val>
+  <c:tx><c:strRef><c:f>{tx_formula}</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>Series 1</c:v></c:pt></c:strCache></c:strRef></c:tx>
+  <c:cat><c:strRef><c:f>{cat_formula}</c:f><c:strCache><c:ptCount val="{point_count}"/>{cat_points}</c:strCache></c:strRef></c:cat>
+  <c:val><c:numRef><c:f>{val_formula}</c:f><c:numCache><c:formatCode>0.00</c:formatCode><c:ptCount val="{point_count}"/>{value_points}</c:numCache></c:numRef></c:val>
  </c:ser></c:barChart></c:plotArea></c:chart>
  <c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData>
 </c:chartSpace>'''
@@ -61,7 +74,7 @@ def make_fixture(path: Path, sparse: bool = False) -> None:
 </Relationships>'''
     chart_rels = '''<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
- <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="E:/ProjectA/data.xlsx" TargetMode="External"/>
+ <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="{external_target}" TargetMode="External"/>
 </Relationships>'''
     content_types = '''<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -105,6 +118,28 @@ class WorkflowTests(unittest.TestCase):
         partial_inventory = cr.inspect_pptx(partial, self.root / "partial-work")
         self.assertEqual(complete_inventory["charts"][0]["recoverability"], "A")
         self.assertEqual(partial_inventory["charts"][0]["recoverability"], "B")
+
+    def test_inline_array_formulas_materialize_as_workbook_ranges(self):
+        source = self.root / "inline-arrays.pptx"
+        make_fixture(source, inline_arrays=True, external_target="NULL")
+
+        repair, _ = self._recover(source)
+
+        self.assertTrue(repair["relink_allowed"])
+        mapping = repair["charts"][0]["data_mappings"][0]
+        self.assertEqual(["A2", "A3"], mapping["category_cells"])
+        self.assertEqual(["B2", "B3"], mapping["value_cells"])
+        workbook = Path(repair["groups"][0]["workbook_path"])
+        opened = load_workbook(workbook, read_only=True, data_only=False)
+        try:
+            sheet = opened[mapping["sheet"]]
+            self.assertEqual([10.0, 20.0], [sheet["B2"].value, sheet["B3"].value])
+        finally:
+            opened.close()
+        recipes = carriers.build_chart_recipes(repair)
+        refs = recipes[0]["series"][0]["refs"]
+        self.assertEqual("range", refs["cat"]["parsed"]["kind"])
+        self.assertEqual("range", refs["val"]["parsed"]["kind"])
 
     def test_confirm_selection_sets_only_explicit_chart_ids(self):
         source = self.root / "selection.pptx"
@@ -216,6 +251,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("ReadValue", worker)
         self.assertIn("user_excel_processes_preserved", verifier)
 
+    def test_office_verifier_refuses_before_chartdata_when_excel_is_running(self):
+        verifier = (SCRIPTS / "office_verify.ps1").read_text(encoding="utf-8-sig")
+        excel_gate = verifier.index("$excelPids = @(Get-Process EXCEL")
+        manifest_build = verifier.index("& $PythonPath $builder")
+
+        self.assertLess(excel_gate, manifest_build)
+        self.assertIn("Excel正在运行", verifier[excel_gate:manifest_build])
+        self.assertIn("exit 20", verifier[excel_gate:manifest_build])
+
     def test_office_verifier_combines_access_checks_but_keeps_update_fresh(self):
         verifier = (SCRIPTS / "office_verify.ps1").read_text(encoding="utf-8-sig")
         worker = (SCRIPTS / "office_stage_worker.ps1").read_text(encoding="utf-8-sig")
@@ -250,10 +294,18 @@ class WorkflowTests(unittest.TestCase):
         repair, _ = self._recover(source, "manifest-work")
         built = office_manifest.build_manifest(repair)
         probe = built["charts"][0]["probe"]
+        self.assertEqual(built["charts"][0]["chart_ordinal"], 1)
         self.assertEqual(probe["series_name"], "Series 1")
         self.assertEqual(probe["sheet"], "Sheet A")
         self.assertEqual(probe["cell"], "B2")
         self.assertEqual(probe["expected_value"], 10.0)
+
+    def test_office_worker_resolves_duplicate_shape_names_by_chart_ordinal(self):
+        worker = (SCRIPTS / "office_stage_worker.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[int]$expectedOrdinal", worker)
+        self.assertIn("$chartInfo.chart_ordinal", worker)
+        self.assertIn("$chartShapeIndexes", worker)
 
     def test_office_verification_manifest_uses_captured_runtime_series_name(self):
         source = self.root / "runtime-series-source.pptx"

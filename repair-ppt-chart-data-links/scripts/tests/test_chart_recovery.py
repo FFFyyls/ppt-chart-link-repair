@@ -88,6 +88,61 @@ class CacheTests(unittest.TestCase):
         self.assertEqual("SeriesName", chart["references"][0]["defined_name"])
         self.assertEqual(["收益率"], chart["references"][0]["values"])
 
+    def test_array_constant_reference_is_not_treated_as_defined_name(self):
+        xml = f'''<c:chartSpace xmlns:c="{C}"><c:chart><c:plotArea><c:barChart>
+        <c:ser><c:idx val="0"/><c:order val="0"/><c:cat><c:strRef>
+        <c:f>{{"A","B"}}</c:f><c:strCache><c:ptCount val="2"/>
+        <c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt>
+        </c:strCache></c:strRef></c:cat><c:val><c:numRef>
+        <c:f>{{10,20}}</c:f><c:numCache><c:ptCount val="2"/>
+        <c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt>
+        </c:numCache></c:numRef></c:val></c:ser>
+        </c:barChart></c:plotArea></c:chart></c:chartSpace>'''.encode("utf-8")
+
+        chart = cr._analyze_chart(xml, "slide-1-chart-1")
+
+        self.assertEqual("A", chart["recoverability"])
+        self.assertTrue(all(ref["inline_array"] for ref in chart["references"]))
+        self.assertTrue(all("defined_name" not in ref for ref in chart["references"]))
+
+    def test_conflicting_defined_name_caches_materialize_as_unique_cells(self):
+        chart = {
+            "chart_id": "slide-45-chart-1",
+            "references": [
+                {
+                    "series_index": 0,
+                    "role": "tx",
+                    "formula": "sheet",
+                    "defined_name": "sheet",
+                    "values": ["Series A"],
+                },
+                {
+                    "series_index": 1,
+                    "role": "tx",
+                    "formula": "sheet",
+                    "defined_name": "sheet",
+                    "values": ["Series B"],
+                },
+                {
+                    "series_index": 2,
+                    "role": "tx",
+                    "formula": "UniqueTitle",
+                    "defined_name": "UniqueTitle",
+                    "values": ["Series C"],
+                },
+            ],
+        }
+
+        cr._materialize_conflicting_defined_name_references(chart)
+
+        first, second, unique = chart["references"]
+        self.assertEqual(["B1"], first["cells"])
+        self.assertEqual(["F1"], second["cells"])
+        self.assertNotEqual(first["formula"], second["formula"])
+        self.assertNotIn("defined_name", first)
+        self.assertNotIn("defined_name", second)
+        self.assertEqual("UniqueTitle", unique["defined_name"])
+
 
 class SafetyTests(unittest.TestCase):
     def test_recovery_requires_explicit_confirmation(self):
@@ -102,6 +157,12 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(
             cr.source_group_key(r"E:\\ProjectA\\data.xlsx", "chart1"),
             cr.source_group_key(r"E:\\ProjectA\\data.xlsx", "chart9"),
+        )
+
+    def test_null_relationship_target_is_isolated_per_chart(self):
+        self.assertNotEqual(
+            cr.source_group_key("NULL", "chart1"),
+            cr.source_group_key("NULL", "chart2"),
         )
 
     def test_subprocess_output_decodes_utf8_before_windows_legacy_codepage(self):
