@@ -29,30 +29,78 @@
 - Microsoft PowerPoint 桌面版
 - `lxml`、`openpyxl`
 
-安装 Python 依赖：
-
-```powershell
-py -3 -m pip install -r requirements.txt
-```
-
 ## 安装 Skill
 
-克隆仓库：
+以下三种方式任选一种。安装后再按相应命令安装 Python 依赖。
+
+### 方法一：Codex Skill Installer
+
+#### 一句话交给 Codex 安装
+
+把下面这段话和仓库链接直接发给 Codex 即可：
+
+```text
+请从 https://github.com/FFFyyls/ppt-chart-link-repair 安装
+repair-ppt-chart-data-links Skill，使用 v1.0.0 正式版本；
+安装 requirements.txt 中的 Python 依赖，
+安装完成后告诉我安装目录和验证结果。
+```
+
+指定正式版本可以避免误装后续尚未发布的开发代码；要求返回安装目录和验证结果，便于确认 Skill 文件与依赖都已就绪。
+
+#### 手动运行安装器
+
+在 PowerShell 中运行 Codex 自带的安装脚本：
+
+```powershell
+py -3 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" `
+  --repo FFFyyls/ppt-chart-link-repair `
+  --path repair-ppt-chart-data-links `
+  --ref v1.0.0
+
+py -3 -m pip install -r `
+  "$env:USERPROFILE\.codex\skills\repair-ppt-chart-data-links\requirements.txt"
+```
+
+如果目标目录已经存在，安装器会停止而不是覆盖。请先确认旧版是否还需要，再自行改名或移走旧目录。安装完成后重新启动 Codex，使新 Skill 生效。
+
+### 方法二：Git 克隆安装
+
+适合希望保留完整仓库、方便以后用 `git pull` 更新的用户：
 
 ```powershell
 git clone https://github.com/FFFyyls/ppt-chart-link-repair.git
-```
 
-将 `repair-ppt-chart-data-links` 整个目录复制到所用 Agent 支持的 Skills 目录。通用 Agent Skills 目录示例：
-
-```powershell
 Copy-Item `
   -LiteralPath ".\ppt-chart-link-repair\repair-ppt-chart-data-links" `
   -Destination "$env:USERPROFILE\.agents\skills\repair-ppt-chart-data-links" `
   -Recurse
+
+py -3 -m pip install -r `
+  "$env:USERPROFILE\.agents\skills\repair-ppt-chart-data-links\requirements.txt"
 ```
 
-不同 Agent 可能使用不同的 Skills 目录，请以相应产品说明为准。不要只复制 `SKILL.md`，脚本和参考文件同样是运行所必需的。
+### 方法三：Release ZIP 安装
+
+从 [Releases](https://github.com/FFFyyls/ppt-chart-link-repair/releases) 下载 `repair-ppt-chart-data-links-v1.0.0.zip`，解压后把其中完整的 `repair-ppt-chart-data-links` 目录放入所用 Agent 的 Skills 目录。例如：
+
+```powershell
+Expand-Archive `
+  -LiteralPath ".\repair-ppt-chart-data-links-v1.0.0.zip" `
+  -DestinationPath ".\ppt-chart-link-repair-v1.0.0"
+
+Copy-Item `
+  -LiteralPath ".\ppt-chart-link-repair-v1.0.0\repair-ppt-chart-data-links" `
+  -Destination "$env:USERPROFILE\.agents\skills\repair-ppt-chart-data-links" `
+  -Recurse
+
+py -3 -m pip install -r `
+  "$env:USERPROFILE\.agents\skills\repair-ppt-chart-data-links\requirements.txt"
+```
+
+不同 Agent 可能使用不同的 Skills 目录，请以相应产品说明为准。不要只复制 `SKILL.md`；`requirements.txt`、脚本和参考文件同样是运行所必需的。
+
+> 严格 Office 验证需要 Windows 桌面版 Excel 和 PowerPoint。开始重连前请保存并关闭正在使用的 Excel、PowerPoint 窗口；如果检测到它们仍在运行，流程会停止并提示，不会擅自关闭。
 
 ## 使用示例
 
@@ -84,7 +132,7 @@ Copy-Item `
 
 ## 已验证结果
 
-- 当前自动化测试：76项。
+- 当前自动化测试：78项。
 - 参考回归样本：22张图表全部通过严格 Office 验证。
 - 参考环境总耗时约19分30秒。
 
